@@ -1,0 +1,35 @@
+# Web Framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.1
+psycopg2-binary==2.9.10
+
+# Task Queue
+celery[redis]==5.4.0
+redis==5.2.1
+
+# Config & Validation
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# LLM
+ollama==0.4.7
+sentence-transformers==3.3.1
+
+# 3D Processing
+trimesh==4.5.3
+pymeshlab==2024.12
+numpy==2.2.1
+
+# HTTP Client
+httpx==0.28.1
+aiofiles==24.1.0
+
+# Utils
+loguru==0.7.3
+python-jose[cryptography]==3.3.0
