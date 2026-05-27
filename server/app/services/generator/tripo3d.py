@@ -1,5 +1,5 @@
 """
-Tripo3D 商用API客户端：文生3D。
+Tripo3D 商用API客户端：文生3D / 图生3D。
 """
 import time
 import httpx
@@ -50,6 +50,56 @@ class Tripo3DClient:
         result = self._poll_task(task_id)
 
         # 下载模型
+        model_url = result["data"]["output"]["model_url"]
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            model_path = output_dir / f"{task_id}.glb"
+            self._download(model_url, model_path)
+            result["local_path"] = str(model_path)
+
+        return {
+            "task_id": task_id,
+            "model_url": model_url,
+            "format": result["data"]["output"].get("format", "glb"),
+            "face_count": result["data"].get("face_count", 0),
+            "local_path": result.get("local_path"),
+        }
+
+    def image_to_3d(
+        self,
+        image_path: str,
+        prompt: str = "",
+        output_dir: Path | None = None,
+    ) -> dict:
+        """
+        提交图生3D任务并轮询等待完成。
+        """
+        # 上传图片
+        with open(image_path, "rb") as f:
+            upload_resp = self._client.post(
+                "/files",
+                files={"file": (Path(image_path).name, f, "image/png")},
+            )
+        upload_resp.raise_for_status()
+        file_id = upload_resp.json()["data"]["file_id"]
+        logger.info(f"Tripo3D file uploaded: {file_id}")
+
+        # 提交图生3D任务
+        payload = {
+            "type": "image_to_model",
+            "file_id": file_id,
+            "prompt": prompt,
+            "output_format": "glb",
+        }
+        resp = self._client.post("/tasks", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        task_id = data["data"]["task_id"]
+        logger.info(f"Tripo3D image-to-3d task submitted: {task_id}")
+
+        result = self._poll_task(task_id)
+
         model_url = result["data"]["output"]["model_url"]
         if output_dir:
             output_dir = Path(output_dir)

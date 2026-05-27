@@ -54,8 +54,6 @@ class Settings(BaseSettings):
     # Commercial 3D APIs
     TRIPO3D_API_KEY: str = ""
     TRIPO3D_API_URL: str = "https://api.tripo3d.ai/v1"
-    MESHY_API_KEY: str = ""
-    MESHY_API_URL: str = "https://api.meshy.ai/v2"
 
     # Storage
     DATA_DIR: Path = Path("/data")

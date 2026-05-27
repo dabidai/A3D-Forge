@@ -13,7 +13,6 @@ from app.core.database import async_session
 from app.models.asset import Asset, AssetStatus, AssetType
 from app.models.task import Task as TaskModel, TaskType, TaskStatus
 from app.services.generator.tripo3d import tripo3d_client
-from app.services.generator.meshy import meshy_client
 from app.services.postprocess.engine import post_process_engine
 from app.services.postprocess.defect_detector import defect_detector
 
@@ -132,7 +131,7 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
 
 @shared_task(bind=True, name="image_to_3d", max_retries=3, default_retry_delay=30)
 def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
-    """图生3D：调用Meshy AI → 下载模型+PBR材质 → 后处理"""
+    """图生3D：调用Tripo3D API → 下载模型 → 后处理"""
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -145,7 +144,7 @@ def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
         loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.GENERATING))
 
         output_dir = settings.ASSETS_DIR / asset_id
-        result = meshy_client.image_to_3d(image_path=image_path, output_dir=output_dir)
+        result = tripo3d_client.image_to_3d(image_path=image_path, output_dir=output_dir)
 
         mesh = post_process_engine.load_model(result["model_path"])
         stats = post_process_engine.get_mesh_stats(mesh)
@@ -169,11 +168,10 @@ def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
             preview_image_path=str(preview_path),
             face_count=stats["face_count"],
             vertex_count=stats["vertex_count"],
-            api_provider="meshy",
+            api_provider="tripo3d",
             api_task_id=result["task_id"],
             tags={
                 "repair_report": repair_report,
-                "pbr_materials": result.get("pbr_materials", {}),
                 "defects": defects,
                 "severity": severity,
             },
