@@ -13,7 +13,6 @@
 """
 import uuid
 import shutil
-import asyncio
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,84 +27,8 @@ from app.schemas.generate import (
     BatchTextTo3DRequest, BatchTextTo3DResponse,
 )
 from app.tasks.generate_tasks import text_to_3d_task, image_to_3d_task
-from app.services.scheduler.router import RoleRouter
-from app.services.scheduler.prompt_mgr import PromptManager
-from app.services.scheduler.ollama_client import ollama_client
 
 router = APIRouter()
-
-
-async def _run_llm_in_thread(system_msg: str, user_msg: str, expect_json: bool = True) -> dict:
-    """
-    在线程池中运行同步Ollama推理，避免阻塞FastAPI事件循环。
-
-    参数:
-        system_msg: 系统提示词（定义LLM角色行为）
-        user_msg: 用户消息（具体待处理内容）
-        expect_json: 是否期望返回JSON格式，为True时temperature=0.1以保证输出稳定
-
-    返回:
-        dict: LLM输出的解析结果，出错时包含 "error" 键
-    """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None, lambda: ollama_client.chat(system_msg, user_msg, expect_json)
-    )
-
-
-async def _optimize_prompt(prompt: str, style: str, complexity: str) -> dict | None:
-    """
-    调用Qwen3 PROMPT_OPTIMIZER角色优化用户自然语言提示词。
-
-    参数:
-        prompt: 用户原始中文/英文描述
-        style: 目标风格（realistic/cartoon/low_poly/sculpture）
-        complexity: 目标复杂度（low/medium/high）
-
-    返回:
-        dict | None: 优化结果，包含 positive_prompt / negative_prompt / style / complexity 字段；
-                     调用失败或Ollama不可用时返回None，不影响主流程
-    """
-    try:
-        role, _ = RoleRouter.route("text_to_3d_prompt")
-        system_prompt = RoleRouter.get_system_prompt(role)
-        system_msg, user_msg = PromptManager.build_prompt(
-            role, system_prompt,
-            {"user_input": prompt, "style": style, "complexity": complexity},
-        )
-        result = await _run_llm_in_thread(system_msg, user_msg)
-        if "error" in result:
-            return None
-        return result
-    except Exception:
-        return None
-
-
-async def _audit_content(content: str, source: str) -> dict | None:
-    """
-    调用Qwen3 CONTENT_AUDITOR角色审核输入内容安全性。
-
-    参数:
-        content: 待审核的文本内容（用户输入或优化后的提示词）
-        source: 内容来源标识（如 "text_to_3d_input"）
-
-    返回:
-        dict | None: 审核结果，包含 compliant(合规判定) / risk_level(风险等级) 等字段；
-                     调用失败时返回None，不阻塞主流程
-    """
-    try:
-        role, _ = RoleRouter.route("content_audit")
-        system_prompt = RoleRouter.get_system_prompt(role)
-        system_msg, user_msg = PromptManager.build_prompt(
-            role, system_prompt,
-            {"content": content, "source": source},
-        )
-        result = await _run_llm_in_thread(system_msg, user_msg)
-        if "error" in result:
-            return None
-        return result
-    except Exception:
-        return None
 
 
 @router.post("/text-to-3d", response_model=TextTo3DResponse)
@@ -130,25 +53,8 @@ async def create_text_to_3d(req: TextTo3DRequest, db: AsyncSession = Depends(get
     返回:
         TextTo3DResponse: task_id, asset_id, status, 原始/优化后提示词, 审核结果
     """
-    optimized_prompt = None
-    optimized_negative = None
-    audit_result = None
-
-    # 1. Qwen3 提示词优化：将自然语言转为结构化3D生成参数
-    if not req.skip_optimization:
-        opt_result = await _optimize_prompt(req.prompt, req.style, req.complexity)
-        if opt_result:
-            optimized_prompt = opt_result.get("positive_prompt", req.prompt)
-            optimized_negative = opt_result.get("negative_prompt", req.negative_prompt)
-
-    final_prompt = optimized_prompt or req.prompt
-    final_negative = optimized_negative or req.negative_prompt
-
-    # 2. Qwen3 内容安全审核：检查输入是否符合合规要求
-    if not req.skip_audit:
-        audit_result = await _audit_content(final_prompt, "text_to_3d_input")
-
-    # 3. 创建资产记录（Asset）和任务记录（Task），关联celery任务
+    # 1. 创建资产记录（Asset）和任务记录（Task），直接推送Celery异步任务
+    #    LLM优化和审核由Celery Worker在后台执行，避免阻塞API响应
     asset = Asset(
         id=uuid.uuid4(),
         name=req.prompt[:50],
@@ -164,13 +70,12 @@ async def create_text_to_3d(req: TextTo3DRequest, db: AsyncSession = Depends(get
         task_type=TaskType.TEXT_TO_3D,
         status=TaskStatus.PENDING,
         input_params={
-            "prompt": final_prompt,
-            "original_prompt": req.prompt,
-            "negative_prompt": final_negative,
+            "prompt": req.prompt,
+            "negative_prompt": req.negative_prompt,
             "style": req.style,
             "complexity": req.complexity,
-            "optimized": optimized_prompt is not None,
-            "audit_passed": audit_result.get("compliant", True) if audit_result else True,
+            "skip_optimization": req.skip_optimization,
+            "skip_audit": req.skip_audit,
         },
     )
     db.add(task)
@@ -183,9 +88,11 @@ async def create_text_to_3d(req: TextTo3DRequest, db: AsyncSession = Depends(get
         kwargs={
             "asset_id": str(asset.id),
             "task_id": str(task.id),
-            "prompt": final_prompt,
-            "negative_prompt": final_negative,
+            "prompt": req.prompt,
+            "negative_prompt": req.negative_prompt,
             "style": req.style,
+            "skip_optimization": req.skip_optimization,
+            "skip_audit": req.skip_audit,
         },
         task_id=str(task.id),
     )
@@ -198,9 +105,6 @@ async def create_text_to_3d(req: TextTo3DRequest, db: AsyncSession = Depends(get
         status="pending",
         message="3D生成任务已提交",
         original_prompt=req.prompt,
-        optimized_prompt=optimized_prompt,
-        optimized_negative_prompt=optimized_negative,
-        audit_result=audit_result,
     )
 
 
@@ -237,9 +141,6 @@ async def create_image_to_3d(
     with open(saved_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # 内容安全审核 (基于文件名)
-    audit_result = await _audit_content(file.filename or "image", "image_to_3d_input")
-
     asset = Asset(
         id=uuid.uuid4(),
         name=file.filename or "image_to_3d",
@@ -258,7 +159,6 @@ async def create_image_to_3d(
             "style": str(style),
             "image_path": str(saved_path),
             "original_filename": file.filename,
-            "audit_passed": audit_result.get("compliant", True) if audit_result else True,
         },
     )
     db.add(task)
@@ -281,7 +181,6 @@ async def create_image_to_3d(
         asset_id=str(asset.id),
         status="pending",
         message="图生3D任务已提交",
-        audit_result=audit_result,
     )
 
 

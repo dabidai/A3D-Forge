@@ -17,7 +17,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Row, Col, Card, Statistic, Table, Tag, Spin, Progress, Button, Space } from "antd";
 import {
-  CubeOutlined, CheckCircleOutlined, CloseCircleOutlined, ToolOutlined,
+  BlockOutlined, CheckCircleOutlined, CloseCircleOutlined, ToolOutlined,
   BugOutlined, ThunderboltOutlined, BarChartOutlined, DownloadOutlined,
 } from "@ant-design/icons";
 import { listAssets, listTasks, getStatsOverview } from "@/api/endpoints";
@@ -65,7 +65,7 @@ export default function Dashboard() {
 
       {/* 第一行: 核心统计卡片 */}
       <Row gutter={[16, 16]}>
-        <Col xs={12} sm={6}><Card><Statistic title="总资产数" value={assets.length} prefix={<CubeOutlined />} /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="总资产数" value={assets.length} prefix={<BlockOutlined />} /></Card></Col>
         <Col xs={12} sm={6}><Card><Statistic title="已处理" value={processed} prefix={<CheckCircleOutlined />} valueStyle={{ color: "#3f8600" }} /></Card></Col>
         <Col xs={12} sm={6}><Card><Statistic title="生成中" value={generating} prefix={<ToolOutlined spin={generating > 0} />} valueStyle={{ color: "#1677ff" }} /></Card></Col>
         <Col xs={12} sm={6}><Card><Statistic title="失败" value={failed} prefix={<CloseCircleOutlined />} valueStyle={{ color: "#cf1322" }} /></Card></Col>

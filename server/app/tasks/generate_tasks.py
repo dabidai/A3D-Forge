@@ -33,6 +33,9 @@ from app.services.generator.tripo3d import tripo3d_client
 from app.services.generator.meshy import meshy_client
 from app.services.postprocess.engine import post_process_engine
 from app.services.postprocess.defect_detector import defect_detector
+from app.services.scheduler.router import RoleRouter
+from app.services.scheduler.prompt_mgr import PromptManager
+from app.services.scheduler.ollama_client import ollama_client
 
 
 async def _update_asset_status(asset_id: uuid.UUID, status: AssetStatus, **kwargs):
@@ -77,16 +80,30 @@ async def _update_task_status(task_id: uuid.UUID, status: TaskStatus, **kwargs):
 
 @shared_task(bind=True, name="text_to_3d", max_retries=3, default_retry_delay=30)
 def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
-                    negative_prompt: str = "", style: str = "realistic"):
+                    negative_prompt: str = "", style: str = "realistic",
+                    skip_optimization: bool = False, skip_audit: bool = False):
     """
-    文生3D异步任务。
+    文生3D异步任务（LLM优化+生成+后处理全流程）。
+
+    流程:
+      1. (可选) Qwen3优化用户提示词 → 结构化生成参数
+      2. (可选) Qwen3内容安全审核
+      3. 调用 Tripo3D API 生成模型（轮询直至完成）
+      4. Trimesh 加载并分析网格统计信息
+      5. PostProcessEngine 自动轻修复（5步管线）
+      6. DefectDetector 全量缺陷检测 + 定级
+      7. 多格式导出 (GLB + FBX + OBJ)
+      8. 生成预览图 (800x600 PNG)
+      9. 更新资产记录
 
     参数:
-        asset_id:        资产UUID字符串
-        task_id:         任务UUID字符串
-        prompt:          优化后的正负向提示词
-        negative_prompt: 负向提示词
-        style:           风格 (realistic/cartoon/low_poly/sculpture)
+        asset_id:          资产UUID字符串
+        task_id:           任务UUID字符串
+        prompt:            用户原始提示词
+        negative_prompt:   负向提示词
+        style:             风格 (realistic/cartoon/low_poly/sculpture)
+        skip_optimization: 跳过LLM提示词优化
+        skip_audit:        跳过内容安全审核
 
     返回:
         { status: "success", asset_id: str, defect_count: int }
@@ -103,35 +120,69 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
         loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
         loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.GENERATING))
 
-        # 2. 调用Tripo3D生成 + 轮询 + 下载
+        # 2. (可选) Qwen3 提示词优化
+        final_prompt = prompt
+        final_negative = negative_prompt
+        if not skip_optimization:
+            try:
+                role, _ = RoleRouter.route("text_to_3d_prompt")
+                system_prompt = RoleRouter.get_system_prompt(role)
+                system_msg, user_msg = PromptManager.build_prompt(
+                    role, system_prompt,
+                    {"user_input": prompt, "style": style, "complexity": "medium"},
+                )
+                opt_result = ollama_client.chat(system_msg, user_msg, expect_json=True)
+                if "error" not in opt_result:
+                    final_prompt = opt_result.get("positive_prompt", prompt)
+                    final_negative = opt_result.get("negative_prompt", negative_prompt)
+                    logger.info(f"LLM prompt optimized: {final_prompt[:80]}...")
+            except Exception as e:
+                logger.warning(f"LLM optimization failed, using raw prompt: {e}")
+
+        # 3. (可选) Qwen3 内容安全审核
+        if not skip_audit:
+            try:
+                role, _ = RoleRouter.route("content_audit")
+                system_prompt = RoleRouter.get_system_prompt(role)
+                system_msg, user_msg = PromptManager.build_prompt(
+                    role, system_prompt,
+                    {"content": final_prompt, "source": "text_to_3d_input"},
+                )
+                audit_result = ollama_client.chat(system_msg, user_msg, expect_json=True)
+                if "error" not in audit_result and not audit_result.get("compliant", True):
+                    logger.warning(f"Content audit flagged: {audit_result}")
+            except Exception as e:
+                logger.warning(f"LLM audit failed, proceeding anyway: {e}")
+
+        # 4. 调用Tripo3D生成 + 轮询 + 下载
         output_dir = settings.ASSETS_DIR / asset_id
         result = tripo3d_client.text_to_3d(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
+            prompt=final_prompt,
+            negative_prompt=final_negative,
             style=style,
             output_dir=output_dir,
         )
 
-        # 3. 加载并分析模型
+        # 5. 加载并分析模型
         model_path = result.get("local_path") or output_dir / f"{result['task_id']}.glb"
         mesh = post_process_engine.load_model(str(model_path))
         stats = post_process_engine.get_mesh_stats(mesh)
 
-        # 4. 自动轻修复（5步管线）
+        # 6. 自动轻修复（5步管线）
         repaired_mesh, repair_report = post_process_engine.auto_light_repair(mesh)
 
-        # 5. 缺陷检测 + 定级
+        # 7. 缺陷检测 + 定级
         defects = defect_detector.detect_all(repaired_mesh)
         severity = defect_detector.classify_severity(defects)
 
-        # 6. 多格式导出
+        # 8. 多格式导出
         formats = post_process_engine.export_formats(repaired_mesh, output_dir, asset_id)
 
-        # 7. 预览图生成
+        # 9. 预览图生成
         preview_path = output_dir / f"{asset_id}_preview.png"
         post_process_engine.generate_preview_image(repaired_mesh, str(preview_path))
 
-        # 8. 更新资产记录（路径 + 统计 + 缺陷数据）
+        # 10. 更新资产记录（路径 + 统计 + 缺陷数据）
         loop.run_until_complete(_update_asset_status(
             asset_uid, AssetStatus.PROCESSED,
             original_model_path=str(model_path),
@@ -151,7 +202,7 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
             },
         ))
 
-        # 9. 更新任务记录为成功
+        # 11. 更新任务记录为成功
         loop.run_until_complete(_update_task_status(
             task_uid, TaskStatus.SUCCESS,
             progress=1.0,

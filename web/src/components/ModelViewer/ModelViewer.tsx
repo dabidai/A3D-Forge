@@ -13,7 +13,7 @@
  *   @react-three/drei   — 辅助组件（OrbitControls/Grid/Html）
  *   three               — 核心3D库
  */
-import { Suspense, useState, useCallback } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, useProgress, Html } from "@react-three/drei";
 import { Button, Radio, Space, Spin, Empty, App } from "antd";
@@ -34,7 +34,7 @@ function ModelMesh({ url, wireframe }: { url: string; wireframe: boolean }) {
   const [obj, setObj] = useState<THREE.Group | null>(null);
   const { message } = App.useApp();
 
-  useCallback(() => {
+  useEffect(() => {
     import("three/examples/jsm/loaders/GLTFLoader.js").then(({ GLTFLoader }) => {
       const gltfLoader = new GLTFLoader();
       gltfLoader.load(

@@ -10,14 +10,14 @@ Windows 本机                        WSL Ubuntu (Docker)
 │ uvicorn :8000    │──localhost──│  postgres :5432        │
 │ (FastAPI)        │              │  redis    :6379        │
 │                  │              │  ollama   :11434       │
-│ pnpm dev :5173   │              │  celery worker         │
+│ npm run dev :5173   │              │  celery worker         │
 │ (Vite 前端)      │              └────────────────────────┘
 └──────────────────┘
 ```
 
 ## 前置条件
 
-- Windows 本机：Python 3.11+、Node.js 20+、pnpm
+- Windows 本机：Python 3.11+、Node.js 20+
 - WSL Ubuntu：Docker Desktop（或 Docker Engine）
 - Tripo3D API Key（[platform.tripo3d.ai](https://platform.tripo3d.ai) 注册获取）
 
@@ -62,8 +62,8 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 cd F:\company\A3D-Forge\web
-pnpm install                       # 仅首次
-pnpm dev
+npm install                       # 仅首次
+npm run dev
 ```
 
 ### 5. 访问
@@ -84,13 +84,13 @@ docker compose up -d
 cd F:\company\A3D-Forge\server && uvicorn app.main:app --reload
 
 # Windows 终端2:
-cd F:\company\A3D-Forge\web && pnpm dev
+cd F:\company\A3D-Forge\web && npm run dev
 ```
 
 ## 停止
 
 ```bash
-# Windows: Ctrl+C 停掉 uvicorn 和 pnpm dev
+# Windows: Ctrl+C 停掉 uvicorn 和 npm run dev
 # WSL:
 docker compose down
 ```

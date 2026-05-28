@@ -20,8 +20,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
-from core.config import settings
-from api.v1 import generate, repair, assets, tasks, logs, stats, export
+from app.core.config import settings
+from app.api.v1 import generate, repair, assets, tasks, logs, stats, export
+
+# 确保数据根目录在 StaticFiles 挂载前存在
+settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
