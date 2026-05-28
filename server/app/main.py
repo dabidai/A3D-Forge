@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     settings.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     settings.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    # yield 之前是 startup 事件，yield 之后是 shutdown 事件。
     yield
 
 
