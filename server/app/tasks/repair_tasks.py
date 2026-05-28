@@ -67,9 +67,12 @@ def repair_model_task(self, asset_id: str, task_id: str):
         from app.core.database import async_session
         from sqlalchemy import select
 
-        async with async_session() as session:
-            result = await session.execute(select(Asset).where(Asset.id == asset_uid))
-            asset = result.scalar_one_or_none()
+        async def _load_asset():
+            async with async_session() as session:
+                result = await session.execute(select(Asset).where(Asset.id == asset_uid))
+                return result.scalar_one_or_none()
+
+        asset = loop.run_until_complete(_load_asset())
 
         model_path = asset.original_model_path or asset.glb_path
         if not model_path:
@@ -87,17 +90,20 @@ def repair_model_task(self, asset_id: str, task_id: str):
         formats = post_process_engine.export_formats(repaired_mesh, output_dir, asset_id)
 
         # 4. 缺陷数据写入 asset_defects 表（数据沉淀）
-        async with async_session() as session:
-            for d in defects:
-                defect_record = AssetDefect(
-                    asset_id=asset_uid,
-                    defect_type=d["type"],
-                    level=DefectLevel(d["level"]),
-                    description=d["description"],
-                    auto_repairable=d.get("repairable", False),
-                )
-                session.add(defect_record)
-            await session.commit()
+        async def _save_defects():
+            async with async_session() as session:
+                for d in defects:
+                    defect_record = AssetDefect(
+                        asset_id=asset_uid,
+                        defect_type=d["type"],
+                        level=DefectLevel(d["level"]),
+                        description=d["description"],
+                        auto_repairable=d.get("repairable", False),
+                    )
+                    session.add(defect_record)
+                await session.commit()
+
+        loop.run_until_complete(_save_defects())
 
         # 5. 更新资产记录
         loop.run_until_complete(_update_asset_status(
@@ -166,14 +172,17 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
         from app.core.database import async_session
         from sqlalchemy import select
 
-        async with async_session() as session:
-            result = await session.execute(select(Asset).where(Asset.id == asset_uid))
-            asset = result.scalar_one_or_none()
+        async def _load_asset_and_defects():
+            async with async_session() as session:
+                result = await session.execute(select(Asset).where(Asset.id == asset_uid))
+                asset = result.scalar_one_or_none()
+                result2 = await session.execute(
+                    select(AssetDefect).where(AssetDefect.asset_id == asset_uid)
+                )
+                defect_records = result2.scalars().all()
+                return asset, defect_records
 
-            result2 = await session.execute(
-                select(AssetDefect).where(AssetDefect.asset_id == asset_uid)
-            )
-            defect_records = result2.scalars().all()
+        asset, defect_records = loop.run_until_complete(_load_asset_and_defects())
 
         if not asset:
             raise ValueError(f"Asset not found: {asset_id}")
@@ -222,12 +231,15 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
 
         # 7. 更新缺陷记录：补充修复方案（tutorial字段）
         if "defects" in llm_result:
-            async with async_session() as session:
-                for i, d_info in enumerate(llm_result["defects"]):
-                    if i < len(defect_records):
-                        defect_records[i].repair_tutorial = d_info.get("tutorial")
-                        defect_records[i].repair_script_path = d_info.get("blender_script")
-                await session.commit()
+            async def _update_tutorials():
+                async with async_session() as session:
+                    for i, d_info in enumerate(llm_result["defects"]):
+                        if i < len(defect_records):
+                            defect_records[i].repair_tutorial = d_info.get("tutorial")
+                            defect_records[i].repair_script_path = d_info.get("blender_script")
+                    await session.commit()
+
+            loop.run_until_complete(_update_tutorials())
 
         loop.run_until_complete(_update_task_status(
             task_uid, TaskStatus.SUCCESS,
