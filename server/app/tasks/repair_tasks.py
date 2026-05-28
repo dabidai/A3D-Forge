@@ -1,8 +1,25 @@
 """
-模型修复与缺陷分析异步任务。
+模型修复与缺陷分析异步Celery任务。
+
+任务列表:
+  1. repair_model_task     — 对已有模型执行修复流程（缺陷检测 → 轻修复 → 导出 → 写DB）
+  2. analyze_defects_task  — 使用本地Qwen3 LLM分析缺陷并生成修复方案（含语义缓存）
+
+repair_model_task 流程:
+  1. 从DB加载资产信息，读取模型文件路径
+  2. Trimesh加载模型 → DefectDetector全量检测 → PostProcessEngine自动修复
+  3. 多格式导出 → 缺陷记录写入 asset_defects 表
+  4. 更新资产状态和标签
+
+analyze_defects_task 流程:
+  1. 从DB加载资产和已有缺陷记录
+  2. 检查语义缓存（避免重复分析）
+  3. RoleRouter路由到 TECH_ANALYST → PromptManager构建提示词 → OllamaClient推理
+  4. OutputValidator校验 → 缓存结果 → 更新缺陷记录（补充tutorial）
 """
 import uuid
 import asyncio
+import json
 from pathlib import Path
 from celery import shared_task
 from loguru import logger
@@ -22,7 +39,19 @@ from app.tasks.generate_tasks import _update_asset_status, _update_task_status
 
 @shared_task(bind=True, name="repair_model", max_retries=2, default_retry_delay=60)
 def repair_model_task(self, asset_id: str, task_id: str):
-    """对已有模型执行修复流程"""
+    """
+    对已有3D模型执行完整的修复流程。
+
+    流程:
+      加载模型 → 缺陷检测 → 自动轻修复 → 多格式导出 → 写DB
+
+    参数:
+        asset_id: 资产UUID
+        task_id:  任务UUID
+
+    返回:
+        { status: "success", asset_id: str, repaired: int }
+    """
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -34,7 +63,7 @@ def repair_model_task(self, asset_id: str, task_id: str):
         loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
         loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.PROCESSING))
 
-        # 加载模型
+        # 1. 加载资产记录，获取模型路径
         from app.core.database import async_session
         from sqlalchemy import select
 
@@ -46,20 +75,18 @@ def repair_model_task(self, asset_id: str, task_id: str):
         if not model_path:
             raise ValueError("No model file found for repair")
 
+        # 2. 加载模型 → 缺陷检测 → 修复
         mesh = post_process_engine.load_model(model_path)
-
-        # 缺陷检测
         defects = defect_detector.detect_all(mesh)
         severity = defect_detector.classify_severity(defects)
 
-        # 自动轻修复
         repaired_mesh, repair_report = post_process_engine.auto_light_repair(mesh)
 
-        # 导出
+        # 3. 多格式导出
         output_dir = settings.ASSETS_DIR / asset_id
         formats = post_process_engine.export_formats(repaired_mesh, output_dir, asset_id)
 
-        # 保存缺陷数据到数据库
+        # 4. 缺陷数据写入 asset_defects 表（数据沉淀）
         async with async_session() as session:
             for d in defects:
                 defect_record = AssetDefect(
@@ -72,7 +99,7 @@ def repair_model_task(self, asset_id: str, task_id: str):
                 session.add(defect_record)
             await session.commit()
 
-        # 更新资产
+        # 5. 更新资产记录
         loop.run_until_complete(_update_asset_status(
             asset_uid, AssetStatus.PROCESSED,
             processed_model_path=formats.get("glb"),
@@ -112,7 +139,19 @@ def repair_model_task(self, asset_id: str, task_id: str):
 
 @shared_task(bind=True, name="analyze_defects", max_retries=2, default_retry_delay=30)
 def analyze_defects_task(self, asset_id: str, task_id: str):
-    """使用LLM分析缺陷并生成修复建议"""
+    """
+    使用本地Qwen3 LLM（TECH_ANALYST角色）深度分析缺陷并生成修复方案。
+
+    流程:
+      加载缺陷记录 → 语义缓存检查 → LLM分析 → 校验 → 缓存 → 更新DB
+
+    参数:
+        asset_id: 资产UUID
+        task_id:  任务UUID
+
+    返回:
+        { status: "success", asset_id: str, cached: bool, result: dict }
+    """
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -123,7 +162,7 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
     try:
         loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
 
-        # 获取资产信息
+        # 1. 加载资产和缺陷记录
         from app.core.database import async_session
         from sqlalchemy import select
 
@@ -139,13 +178,13 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
         if not asset:
             raise ValueError(f"Asset not found: {asset_id}")
 
-        # 构建缺陷摘要
+        # 2. 构建缺陷摘要（供LLM分析）
         defects_summary = [
             {"type": d.defect_type, "level": d.level.value, "description": d.description}
             for d in defect_records
         ]
 
-        # 检查缓存
+        # 3. 检查语义缓存（相同缺陷组合不再重复分析）
         cache_key = f"defect_analysis:{asset_id}"
         cached = cache_manager.get_similar(
             json.dumps(defects_summary), prefix="llm_defect"
@@ -159,7 +198,7 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
             loop.close()
             return {"status": "success", "cached": True, "result": cached}
 
-        # LLM分析
+        # 4. LLM分析: 角色路由 → 提示词构建 → 推理
         role, confidence = RoleRouter.route("defect_analysis")
         system_prompt = RoleRouter.get_system_prompt(role)
         system_msg, user_msg = PromptManager.build_prompt(
@@ -173,15 +212,15 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
 
         llm_result = ollama_client.chat(system_msg, user_msg, expect_json=True)
 
-        # 校验输出
+        # 5. 校验LLM输出格式
         is_valid, errors = OutputValidator.validate(role.value, llm_result)
         if not is_valid:
             logger.warning(f"LLM output validation warnings: {errors}")
 
-        # 缓存结果
+        # 6. 缓存分析结果
         cache_manager.set(json.dumps(defects_summary), llm_result, prefix="llm_defect")
 
-        # 更新缺陷记录：补充修复方案
+        # 7. 更新缺陷记录：补充修复方案（tutorial字段）
         if "defects" in llm_result:
             async with async_session() as session:
                 for i, d_info in enumerate(llm_result["defects"]):
@@ -205,6 +244,3 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
         raise
     finally:
         loop.close()
-
-
-import json

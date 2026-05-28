@@ -23,7 +23,7 @@ sentence-transformers==3.3.1
 
 # 3D Processing
 trimesh==4.5.3
-pymeshlab==2024.12
+pymeshlab==2025.7.post1
 numpy==2.2.1
 
 # HTTP Client

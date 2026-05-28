@@ -41,8 +41,8 @@ docker compose up -d
 ### 2. WSL — 初始化（仅首次）
 
 ```bash
-# 拉取 Qwen3-7B 模型（约 4GB）
-docker exec a3d-ollama ollama pull qwen3:7b
+# 拉取 Qwen3 8B 模型（约 5.5GB，需 6-8GB 内存）
+docker exec a3d-ollama ollama pull qwen3:8b
 
 # 创建数据库表
 docker exec a3d-worker alembic revision --autogenerate -m "init"

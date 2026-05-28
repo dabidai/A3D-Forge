@@ -1,9 +1,24 @@
 """
-提示词管理器：管理Prompt模板，集成3D领域RAG知识库。
+提示词管理器：管理Prompt模板 + 集成3D领域RAG知识库。
+
+核心功能:
+  - build_prompt(role, system_prompt, template_vars) → 构建完整的 (system_msg, user_msg)
+  - get_rag_context(role) → 获取角色关联的RAG知识库内容
+
+RAG知识库结构（嵌入式领域知识，注入LLM上下文）:
+  1. blender_api:    Blender Python API 常用修复操作
+  2. topology_rules: 拓扑规范（水密/流形/无退化/UV无重叠/面均匀）
+  3. pbr_parameters: PBR材质参数标准
+  4. defect_patterns: 缺陷模式识别与修复策略
+
+角色Prompt模板:
+  每个角色有独立的 system_prompt 模板和 user_template，
+  通过 build_prompt() 将 template_vars 注入模板生成最终消息。
 """
 from app.services.scheduler.router import LLMRole
 
-# 3D领域知识库：Blender API、拓扑规范、PBR参数、缺陷修复方案
+
+# ---- 3D领域RAG知识库（嵌入式，非向量检索） ----
 RAG_KNOWLEDGE_BASE = {
     "blender_api": {
         "mesh_cleanup": (
@@ -37,6 +52,7 @@ RAG_KNOWLEDGE_BASE = {
     },
 }
 
+# ---- 各角色Prompt模板 ----
 TASK_TEMPLATES = {
     LLMRole.PROMPT_OPTIMIZER: {
         "system_prompt": "{role_prompt}",
@@ -72,7 +88,14 @@ TASK_TEMPLATES = {
 
 
 class PromptManager:
-    """构建完整的LLM Prompt，嵌入RAG知识库上下文"""
+    """
+    构建完整的LLM提示词。
+
+    用法:
+      system_msg, user_msg = PromptManager.build_prompt(
+          role, system_prompt, {"user_input": prompt, "style": "realistic", "complexity": "medium"}
+      )
+    """
 
     @staticmethod
     def build_prompt(
@@ -81,8 +104,15 @@ class PromptManager:
         template_vars: dict[str, str],
     ) -> tuple[str, str]:
         """
-        返回 (system_message, user_message)
-        template_vars 会被注入到 user_template 中
+        构建 (system_message, user_message) 元组，供 OllamaClient.chat() 使用。
+
+        参数:
+            role:           LLM角色枚举
+            system_prompt:  角色的System Prompt文本（来自 RoleRouter）
+            template_vars:  user_template 中的占位符替换字典
+
+        返回:
+            (system_message: str, user_message: str)
         """
         template = TASK_TEMPLATES.get(role, TASK_TEMPLATES[LLMRole.TECH_ANALYST])
         system_msg = template["system_prompt"].format(role_prompt=system_prompt)
@@ -91,7 +121,15 @@ class PromptManager:
 
     @staticmethod
     def get_rag_context(role: LLMRole) -> dict:
-        """获取该角色关联的RAG知识库内容"""
+        """
+        获取指定角色关联的RAG知识库内容（嵌入LLM上下文用）。
+
+        参数:
+            role: LLM角色枚举
+
+        返回:
+            { context_key: knowledge_text, ... }
+        """
         template = TASK_TEMPLATES.get(role, TASK_TEMPLATES[LLMRole.TECH_ANALYST])
         contexts = {}
         for ctx_key in template["rag_contexts"]:
