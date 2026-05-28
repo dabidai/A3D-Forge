@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     # ---- Ollama 本地LLM ----
     OLLAMA_HOST: str = "http://ollama:11434"          # Ollama API地址
-    OLLAMA_MODEL: str = "qwen3:8b"                    # Qwen3 默认模型（8B Dense，需6-8GB内存），内置thinking模式
+    OLLAMA_MODEL: str = "qwen3:4b"                    # 4B Dense，约2.5GB，推理需4-6GB内存（适配8G机器）
     OLLAMA_TIMEOUT: int = 180                          # 单次推理超时（秒），CPU推理慢需给足时间
     OLLAMA_MAX_RETRIES: int = 3                        # JSON解析失败时最大重试次数
 
