@@ -18,7 +18,6 @@ analyze_defects_task 流程:
   4. OutputValidator校验 → 缓存结果 → 更新缺陷记录（补充tutorial）
 """
 import uuid
-import asyncio
 import json
 from pathlib import Path
 from celery import shared_task
@@ -26,6 +25,7 @@ from loguru import logger
 
 from app.core.celery_app import celery_app  # noqa: F401 — 确保Celery app在API进程中被初始化
 from app.core.config import settings
+from app.core.database import SyncSession
 from app.models.asset import Asset, AssetStatus, AssetDefect, DefectLevel
 from app.models.task import TaskStatus
 from app.services.postprocess.engine import post_process_engine
@@ -53,27 +53,19 @@ def repair_model_task(self, asset_id: str, task_id: str):
     返回:
         { status: "success", asset_id: str, repaired: int }
     """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    from sqlalchemy import select
 
     asset_uid = uuid.UUID(asset_id)
     task_uid = uuid.UUID(task_id)
 
     try:
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.PROCESSING))
+        _update_task_status(task_uid, TaskStatus.RUNNING)
+        _update_asset_status(asset_uid, AssetStatus.PROCESSING)
 
         # 1. 加载资产记录，获取模型路径
-        from app.core.database import async_session
-        from sqlalchemy import select
-
-        async def _load_asset():
-            async with async_session() as session:
-                result = await session.execute(select(Asset).where(Asset.id == asset_uid))
-                return result.scalar_one_or_none()
-
-        asset = loop.run_until_complete(_load_asset())
+        with SyncSession() as session:
+            result = session.execute(select(Asset).where(Asset.id == asset_uid))
+            asset = result.scalar_one_or_none()
 
         model_path = asset.original_model_path or asset.glb_path
         if not model_path:
@@ -90,36 +82,33 @@ def repair_model_task(self, asset_id: str, task_id: str):
         output_dir = settings.ASSETS_DIR / asset_id
         formats = post_process_engine.export_formats(repaired_mesh, output_dir, asset_id)
 
-        # 4. 缺陷数据写入 asset_defects 表（数据沉淀）
-        async def _save_defects():
-            async with async_session() as session:
-                for d in defects:
-                    defect_record = AssetDefect(
-                        asset_id=asset_uid,
-                        defect_type=d["type"],
-                        level=DefectLevel(d["level"]),
-                        description=d["description"],
-                        auto_repairable=d.get("repairable", False),
-                    )
-                    session.add(defect_record)
-                await session.commit()
-
-        loop.run_until_complete(_save_defects())
+        # 4. 缺陷数据写入 asset_defects 表
+        with SyncSession() as session:
+            for d in defects:
+                defect_record = AssetDefect(
+                    asset_id=asset_uid,
+                    defect_type=d["type"],
+                    level=DefectLevel(d["level"]),
+                    description=d["description"],
+                    auto_repairable=d.get("repairable", False),
+                )
+                session.add(defect_record)
+            session.commit()
 
         # 5. 更新资产记录
-        loop.run_until_complete(_update_asset_status(
+        _update_asset_status(
             asset_uid, AssetStatus.PROCESSED,
             processed_model_path=formats.get("glb"),
             glb_path=formats.get("glb"),
             fbx_path=formats.get("fbx"),
             obj_path=formats.get("obj"),
             tags={"repair_report": repair_report, "defects": defects, "severity": severity},
-        ))
+        )
 
         auto_repaired = sum(1 for d in defects if d.get("repairable") and d["level"] == "mild")
         needs_manual = len(defects) - auto_repaired
 
-        loop.run_until_complete(_update_task_status(
+        _update_task_status(
             task_uid, TaskStatus.SUCCESS,
             progress=1.0,
             output_result={
@@ -129,19 +118,15 @@ def repair_model_task(self, asset_id: str, task_id: str):
                 "severity": severity,
                 "repair_report": repair_report,
             },
-        ))
+        )
 
         return {"status": "success", "asset_id": asset_id, "repaired": auto_repaired}
 
     except Exception as exc:
         logger.error(f"Repair task failed: {exc}")
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.FAILED,
-                                                      error_message=str(exc)))
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.FAILED,
-                                                      error_message=str(exc)))
+        _update_asset_status(asset_uid, AssetStatus.FAILED, error_message=str(exc))
+        _update_task_status(task_uid, TaskStatus.FAILED, error_message=str(exc))
         raise
-    finally:
-        loop.close()
 
 
 @shared_task(bind=True, name="analyze_defects", max_retries=2, default_retry_delay=30)
@@ -159,31 +144,22 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
     返回:
         { status: "success", asset_id: str, cached: bool, result: dict }
     """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    from sqlalchemy import select
 
     asset_uid = uuid.UUID(asset_id)
     task_uid = uuid.UUID(task_id)
 
     try:
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
+        _update_task_status(task_uid, TaskStatus.RUNNING)
 
         # 1. 加载资产和缺陷记录
-        from app.core.database import async_session
-        from sqlalchemy import select
-
-        async def _load_asset_and_defects():
-            async with async_session() as session:
-                result = await session.execute(select(Asset).where(Asset.id == asset_uid))
-                asset = result.scalar_one_or_none()
-                result2 = await session.execute(
-                    select(AssetDefect).where(AssetDefect.asset_id == asset_uid)
-                )
-                defect_records = result2.scalars().all()
-                return asset, defect_records
-
-        asset, defect_records = loop.run_until_complete(_load_asset_and_defects())
+        with SyncSession() as session:
+            result = session.execute(select(Asset).where(Asset.id == asset_uid))
+            asset = result.scalar_one_or_none()
+            result2 = session.execute(
+                select(AssetDefect).where(AssetDefect.asset_id == asset_uid)
+            )
+            defect_records = result2.scalars().all()
 
         if not asset:
             raise ValueError(f"Asset not found: {asset_id}")
@@ -194,18 +170,12 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
             for d in defect_records
         ]
 
-        # 3. 检查语义缓存（相同缺陷组合不再重复分析）
-        cache_key = f"defect_analysis:{asset_id}"
+        # 3. 检查语义缓存
         cached = cache_manager.get_similar(
             json.dumps(defects_summary), prefix="llm_defect"
         )
         if cached:
-            loop.run_until_complete(_update_task_status(
-                task_uid, TaskStatus.SUCCESS,
-                progress=1.0,
-                output_result=cached,
-            ))
-            loop.close()
+            _update_task_status(task_uid, TaskStatus.SUCCESS, progress=1.0, output_result=cached)
             return {"status": "success", "cached": True, "result": cached}
 
         # 4. LLM分析: 角色路由 → 提示词构建 → 推理
@@ -232,28 +202,18 @@ def analyze_defects_task(self, asset_id: str, task_id: str):
 
         # 7. 更新缺陷记录：补充修复方案（tutorial字段）
         if "defects" in llm_result:
-            async def _update_tutorials():
-                async with async_session() as session:
-                    for i, d_info in enumerate(llm_result["defects"]):
-                        if i < len(defect_records):
-                            defect_records[i].repair_tutorial = d_info.get("tutorial")
-                            defect_records[i].repair_script_path = d_info.get("blender_script")
-                    await session.commit()
+            with SyncSession() as session:
+                for i, d_info in enumerate(llm_result["defects"]):
+                    if i < len(defect_records):
+                        defect_records[i].repair_tutorial = d_info.get("tutorial")
+                        defect_records[i].repair_script_path = d_info.get("blender_script")
+                session.commit()
 
-            loop.run_until_complete(_update_tutorials())
-
-        loop.run_until_complete(_update_task_status(
-            task_uid, TaskStatus.SUCCESS,
-            progress=1.0,
-            output_result=llm_result,
-        ))
+        _update_task_status(task_uid, TaskStatus.SUCCESS, progress=1.0, output_result=llm_result)
 
         return {"status": "success", "asset_id": asset_id, "result": llm_result}
 
     except Exception as exc:
         logger.error(f"Defect analysis failed: {exc}")
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.FAILED,
-                                                      error_message=str(exc)))
+        _update_task_status(task_uid, TaskStatus.FAILED, error_message=str(exc))
         raise
-    finally:
-        loop.close()

@@ -12,23 +12,38 @@
   # 模型中: class MyModel(Base)
 """
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 
 from app.core.config import settings
 
-# 异步引擎 — 通过 asyncpg 连接 PostgreSQL
+# 异步引擎 — 通过 asyncpg 连接 PostgreSQL（FastAPI 接口层使用）
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=False,           # 不输出SQL日志（调试时可改为True）
-    pool_size=10,         # 连接池常驻连接数
-    max_overflow=20,      # 连接池最大溢出连接数
+    echo=False,
+    pool_size=10,
+    max_overflow=20,
 )
 
-# 异步会话工厂 — 每个请求通过 get_db() 获取独立会话
+# 异步会话工厂 — FastAPI 路由通过 get_db() 使用
 async_session = async_sessionmaker(
     engine,
     class_=AsyncSession,
-    expire_on_commit=False,   # 提交后不过期对象，避免在响应序列化时报 DetachedInstanceError
+    expire_on_commit=False,
+)
+
+# 同步引擎+会话 — Celery Worker 使用（避免 event loop 冲突）
+sync_engine = create_engine(
+    settings.DATABASE_URL_SYNC,
+    echo=False,
+    pool_size=5,
+    max_overflow=10,
+)
+
+SyncSession = sessionmaker(
+    sync_engine,
+    class_=Session,
+    expire_on_commit=False,
 )
 
 

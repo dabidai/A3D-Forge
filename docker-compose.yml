@@ -50,6 +50,7 @@ services:
       context: ./server
       dockerfile: Dockerfile
     container_name: a3d-worker
+    env_file: ./server/.env
     environment:
       # 容器内用服务名互访，覆盖 .env 的 localhost
       - PYTHONPATH=/app
@@ -57,9 +58,6 @@ services:
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
       - OLLAMA_HOST=http://ollama:11434
-      - TRIPO3D_API_KEY=${TRIPO3D_API_KEY:-}
-      - TRIPO3D_API_URL=${TRIPO3D_API_URL:-https://api.tripo3d.ai/v1}
-      - SECRET_KEY=${SECRET_KEY:-dev-secret}
     volumes:
       - ./server:/app
       - asset_data:/data

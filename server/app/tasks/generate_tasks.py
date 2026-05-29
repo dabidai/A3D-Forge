@@ -27,7 +27,7 @@ from loguru import logger
 
 from app.core.celery_app import celery_app  # noqa: F401 — 确保Celery app在API进程中被初始化
 from app.core.config import settings
-from app.core.database import async_session
+from app.core.database import SyncSession
 from app.models.asset import Asset, AssetStatus, AssetType
 from app.models.task import Task as TaskModel, TaskType, TaskStatus
 from app.services.generator.tripo3d import tripo3d_client
@@ -39,44 +39,30 @@ from app.services.scheduler.prompt_mgr import PromptManager
 from app.services.scheduler.ollama_client import ollama_client
 
 
-async def _update_asset_status(asset_id: uuid.UUID, status: AssetStatus, **kwargs):
-    """
-    异步更新资产表状态。
-
-    参数:
-        asset_id: 资产UUID
-        status:   新状态枚举值
-        **kwargs: 要更新的字段名和值（如 glb_path=..., face_count=...）
-    """
-    async with async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(select(Asset).where(Asset.id == asset_id))
+def _update_asset_status(asset_id: uuid.UUID, status: AssetStatus, **kwargs):
+    """同步更新资产表状态（供 Celery 任务使用）。"""
+    from sqlalchemy import select
+    with SyncSession() as session:
+        result = session.execute(select(Asset).where(Asset.id == asset_id))
         asset = result.scalar_one_or_none()
         if asset:
             asset.status = status
             for key, value in kwargs.items():
                 setattr(asset, key, value)
-            await session.commit()
+            session.commit()
 
 
-async def _update_task_status(task_id: uuid.UUID, status: TaskStatus, **kwargs):
-    """
-    异步更新任务表状态。
-
-    参数:
-        task_id: 任务UUID
-        status:  新状态枚举值
-        **kwargs: 要更新的字段（如 progress=1.0, output_result=...）
-    """
-    async with async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(select(TaskModel).where(TaskModel.id == task_id))
+def _update_task_status(task_id: uuid.UUID, status: TaskStatus, **kwargs):
+    """同步更新任务表状态（供 Celery 任务使用）。"""
+    from sqlalchemy import select
+    with SyncSession() as session:
+        result = session.execute(select(TaskModel).where(TaskModel.id == task_id))
         task = result.scalar_one_or_none()
         if task:
             task.status = status
             for key, value in kwargs.items():
                 setattr(task, key, value)
-            await session.commit()
+            session.commit()
 
 
 @shared_task(bind=True, name="text_to_3d", max_retries=3, default_retry_delay=30)
@@ -109,17 +95,13 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
     返回:
         { status: "success", asset_id: str, defect_count: int }
     """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     asset_uid = uuid.UUID(asset_id)
     task_uid = uuid.UUID(task_id)
 
     try:
         # 1. 更新状态为执行中
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.GENERATING))
+        _update_task_status(task_uid, TaskStatus.RUNNING)
+        _update_asset_status(asset_uid, AssetStatus.GENERATING)
 
         # 2. (可选) Qwen3 提示词优化
         final_prompt = prompt
@@ -184,7 +166,7 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
         post_process_engine.generate_preview_image(repaired_mesh, str(preview_path))
 
         # 10. 更新资产记录（路径 + 统计 + 缺陷数据）
-        loop.run_until_complete(_update_asset_status(
+        _update_asset_status(
             asset_uid, AssetStatus.PROCESSED,
             original_model_path=str(model_path),
             processed_model_path=formats.get("glb"),
@@ -201,34 +183,26 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
                 "defects": defects,
                 "severity": severity,
             },
-        ))
+        )
 
         # 11. 更新任务记录为成功
-        loop.run_until_complete(_update_task_status(
+        _update_task_status(
             task_uid, TaskStatus.SUCCESS,
             progress=1.0,
             output_result={"stats": stats, "defect_count": len(defects), "severity": severity},
-        ))
+        )
 
         return {"status": "success", "asset_id": asset_id, "defect_count": len(defects)}
 
     except SoftTimeLimitExceeded:
-        # 软超时：有时间做清理 → 标记FAILED
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.FAILED,
-                                                      error_message="Task timed out"))
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.FAILED,
-                                                      error_message="Task timed out"))
+        _update_asset_status(asset_uid, AssetStatus.FAILED, error_message="Task timed out")
+        _update_task_status(task_uid, TaskStatus.FAILED, error_message="Task timed out")
         raise
     except Exception as exc:
         logger.error(f"Text to 3D failed: {exc}")
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.FAILED,
-                                                      error_message=str(exc)))
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.FAILED,
-                                                      error_message=str(exc)))
-        # Celery自动重试（最多3次，间隔30s）
+        _update_asset_status(asset_uid, AssetStatus.FAILED, error_message=str(exc))
+        _update_task_status(task_uid, TaskStatus.FAILED, error_message=str(exc))
         raise self.retry(exc=exc)
-    finally:
-        loop.close()
 
 
 @shared_task(bind=True, name="image_to_3d", max_retries=3, default_retry_delay=30)
@@ -246,16 +220,12 @@ def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
     返回:
         { status: "success", asset_id: str, defect_count: int, provider: str }
     """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     asset_uid = uuid.UUID(asset_id)
     task_uid = uuid.UUID(task_id)
 
     try:
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.RUNNING))
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.GENERATING))
+        _update_task_status(task_uid, TaskStatus.RUNNING)
+        _update_asset_status(asset_uid, AssetStatus.GENERATING)
 
         output_dir = settings.ASSETS_DIR / asset_id
 
@@ -301,7 +271,7 @@ def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
         if pbr_paths:
             tags["pbr_materials"] = pbr_paths
 
-        loop.run_until_complete(_update_asset_status(
+        _update_asset_status(
             asset_uid, AssetStatus.PROCESSED,
             original_model_path=model_path,
             processed_model_path=formats.get("glb"),
@@ -314,9 +284,9 @@ def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
             api_provider=provider,
             api_task_id=result.get("task_id", ""),
             tags=tags,
-        ))
+        )
 
-        loop.run_until_complete(_update_task_status(
+        _update_task_status(
             task_uid, TaskStatus.SUCCESS,
             progress=1.0,
             output_result={
@@ -325,22 +295,16 @@ def image_to_3d_task(self, asset_id: str, task_id: str, image_path: str):
                 "severity": severity,
                 "provider": provider,
             },
-        ))
+        )
 
         return {"status": "success", "asset_id": asset_id, "defect_count": len(defects), "provider": provider}
 
     except SoftTimeLimitExceeded:
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.FAILED,
-                                                      error_message="Task timed out"))
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.FAILED,
-                                                      error_message="Task timed out"))
+        _update_asset_status(asset_uid, AssetStatus.FAILED, error_message="Task timed out")
+        _update_task_status(task_uid, TaskStatus.FAILED, error_message="Task timed out")
         raise
     except Exception as exc:
         logger.error(f"Image to 3D failed: {exc}")
-        loop.run_until_complete(_update_asset_status(asset_uid, AssetStatus.FAILED,
-                                                      error_message=str(exc)))
-        loop.run_until_complete(_update_task_status(task_uid, TaskStatus.FAILED,
-                                                      error_message=str(exc)))
+        _update_asset_status(asset_uid, AssetStatus.FAILED, error_message=str(exc))
+        _update_task_status(task_uid, TaskStatus.FAILED, error_message=str(exc))
         raise self.retry(exc=exc)
-    finally:
-        loop.close()

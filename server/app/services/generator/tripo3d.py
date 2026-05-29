@@ -38,6 +38,7 @@ class Tripo3DClient:
                 "Content-Type": "application/json",
             },
             timeout=300,
+            follow_redirects=True,
         )
 
     def text_to_3d(

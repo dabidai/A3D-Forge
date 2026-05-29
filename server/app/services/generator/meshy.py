@@ -44,6 +44,7 @@ class MeshyClient:
                 "Content-Type": "application/json",
             },
             timeout=300,
+            follow_redirects=True,
         )
 
     def image_to_3d(
