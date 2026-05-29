@@ -28,6 +28,7 @@ class DefectDetector:
     def detect_all(self, mesh: trimesh.Trimesh) -> list[dict]:
         """
         执行全量缺陷检测，汇总所有检测结果。
+        面数>100k时先降采样至50k，避免OOM。
 
         参数:
             mesh: Trimesh网格对象
@@ -36,11 +37,17 @@ class DefectDetector:
             缺陷信息列表，按检测顺序排列
         """
         defects = []
+        analysis_mesh = mesh
 
-        defects.extend(self.detect_non_manifold(mesh))
-        defects.extend(self.detect_degenerate_faces(mesh))
-        defects.extend(self.detect_inconsistent_normals(mesh))
-        defects.extend(self.detect_isolated_components(mesh))
+        if len(mesh.faces) > 100_000:
+            target = min(50_000, len(mesh.faces) // 4)
+            analysis_mesh = mesh.simplify_quadratic_decimation(target)
+            logger.info(f"Decimated mesh for defect analysis: {len(mesh.faces)} → {len(analysis_mesh.faces)} faces")
+
+        defects.extend(self.detect_non_manifold(analysis_mesh))
+        defects.extend(self.detect_degenerate_faces(analysis_mesh))
+        defects.extend(self.detect_inconsistent_normals(analysis_mesh))
+        defects.extend(self.detect_isolated_components(analysis_mesh))
 
         logger.info(f"Defect detection complete: {len(defects)} defects found")
         return defects
@@ -53,10 +60,15 @@ class DefectDetector:
         非流形顶点: 该顶点邻接面不构成闭合盘拓扑
         """
         defects = []
-        # 检测非流形边
-        non_manifold_edges = mesh.edges[
-            np.where(mesh.edges_sparse.toarray().sum(axis=1) != 2)[0]
-        ] if hasattr(mesh, 'edges_sparse') and mesh.edges_sparse is not None else []
+        # 检测非流形边（面数>100k跳过，稀疏矩阵计算内存过大）
+        non_manifold_edges = []
+        if hasattr(mesh, 'edges_sparse') and len(mesh.faces) < 100_000:
+            try:
+                edge_degrees = np.array(mesh.edges_sparse.sum(axis=1)).flatten()
+                non_manifold_idx = np.where(edge_degrees != 2)[0]
+                non_manifold_edges = mesh.edges[non_manifold_idx] if len(non_manifold_idx) > 0 else []
+            except Exception as e:
+                logger.warning(f"Non-manifold edge detection skipped: {e}")
         if len(non_manifold_edges) > 0:
             defects.append({
                 "type": "non_manifold_edge",

@@ -55,6 +55,7 @@ services:
       # 容器内用服务名互访，覆盖 .env 的 localhost
       - PYTHONPATH=/app
       - HF_ENDPOINT=https://hf-mirror.com
+      - DATA_DIR=/app/data
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
       - OLLAMA_HOST=http://ollama:11434

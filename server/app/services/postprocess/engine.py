@@ -211,8 +211,12 @@ class PostProcessEngine:
     def _detect_holes(self, mesh: trimesh.Trimesh) -> list[dict]:
         """检测模型孔洞，返回孔洞信息列表。"""
         holes = []
+        try:
+            boundaries = mesh.boundaries
+        except AttributeError:
+            return holes
         bbox_diag = np.linalg.norm(mesh.bounds[1] - mesh.bounds[0])
-        for boundary in mesh.boundaries:
+        for boundary in boundaries:
             edges = boundary.entities
             hole_diag = np.linalg.norm(boundary.bounds[1] - boundary.bounds[0]) if len(boundary.bounds) > 0 else 0
             holes.append({

@@ -146,8 +146,12 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
             output_dir=output_dir,
         )
 
-        # 5. 加载并分析模型
+        # 5. 加载并分析模型（先确保原始文件以 asset_id 命名，供前端直接访问）
         model_path = result.get("local_path") or output_dir / f"{result['task_id']}.glb"
+        fallback_path = output_dir / f"{asset_id}.glb"
+        if Path(model_path) != fallback_path:
+            import shutil
+            shutil.copy2(str(model_path), str(fallback_path))
         mesh = post_process_engine.load_model(str(model_path))
         stats = post_process_engine.get_mesh_stats(mesh)
 

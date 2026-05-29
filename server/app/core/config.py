@@ -83,10 +83,10 @@ class Settings(BaseSettings):
     MESHY_API_URL: str = "https://api.meshy.ai/v1"
 
     # ---- 本地文件存储 ----
-    DATA_DIR: Path = Path("/data")              # 数据根目录
-    ASSETS_DIR: Path = Path("/data/assets")     # 3D模型资产目录（按asset_id分子目录）
-    SCRIPTS_DIR: Path = Path("/data/scripts")   # 修复脚本归档目录
-    LOGS_DIR: Path = Path("/data/logs")         # 日志输出目录
+    DATA_DIR: Path = Path("./data")             # 数据根目录（Docker由环境变量覆盖为 /app/data）
+    ASSETS_DIR: Path = Path("./data/assets")    # 3D模型资产目录（按asset_id分子目录）
+    SCRIPTS_DIR: Path = Path("./data/scripts")  # 修复脚本归档目录
+    LOGS_DIR: Path = Path("./data/logs")        # 日志输出目录
 
     # ---- 处理限制 ----
     MAX_MODEL_FACES: int = 500000        # 单模型最大面数（超出警告）
