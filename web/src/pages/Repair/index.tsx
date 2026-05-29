@@ -10,7 +10,8 @@
  *   6. 缺陷表格 — 可展开查看LLM生成的修复教程，支持下载
  *   7. 模型预览 — 支持原始/修复后模型切换
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Card, Input, Button, Table, Tag, Space, message, Collapse, Typography, Row, Col, Statistic, Descriptions } from "antd";
 import { ToolOutlined, BugOutlined, RobotOutlined, ReloadOutlined, DownloadOutlined, SwapOutlined } from "@ant-design/icons";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -22,10 +23,21 @@ import type { DefectInfo, AssetInfo } from "@/types";
 const { Paragraph } = Typography;
 
 export default function Repair() {
+  const [searchParams] = useSearchParams();
   const [assetId, setAssetId] = useState("");
   const [activeAssetId, setActiveAssetId] = useState<string | null>(null);
-  const [showRepaired, setShowRepaired] = useState(false);  // 模型切换：原始/修复后
+  const [showRepaired, setShowRepaired] = useState(false);
   const logAction = useAppStore((s) => s.logAction);
+
+  // 从 URL query 参数自动加载资产（如 /repair?asset_id=xxx）
+  useEffect(() => {
+    const idFromUrl = searchParams.get("asset_id");
+    if (idFromUrl && idFromUrl !== activeAssetId) {
+      setAssetId(idFromUrl);
+      setActiveAssetId(idFromUrl);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // 资产详情查询
   const { data: assetData, refetch: refetchAsset } = useQuery({

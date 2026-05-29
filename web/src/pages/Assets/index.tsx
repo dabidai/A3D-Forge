@@ -99,7 +99,7 @@ export default function Assets() {
             render: (_, record) => (
               <Space size="small">
                 <Button size="small" icon={<EyeOutlined />}
-                  onClick={() => { logAction("view_asset", "资产管理", record.id); navigate(`/repair`); }}>
+                  onClick={() => { logAction("view_asset", "资产管理", record.id); navigate(`/repair?asset_id=${record.id}`); }}>
                   查看
                 </Button>
                 <Button size="small" icon={<DownloadOutlined />} disabled={!record.glb_path}

@@ -1,3 +1,4 @@
 /server/.env
 error.txt
 /web/node_modules/
+__pycache__/

@@ -25,6 +25,7 @@ from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
 from loguru import logger
 
+from app.core.celery_app import celery_app  # noqa: F401 — 确保Celery app在API进程中被初始化
 from app.core.config import settings
 from app.core.database import async_session
 from app.models.asset import Asset, AssetStatus, AssetType
