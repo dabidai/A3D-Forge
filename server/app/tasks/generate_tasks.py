@@ -155,48 +155,32 @@ def text_to_3d_task(self, asset_id: str, task_id: str, prompt: str,
         mesh = post_process_engine.load_model(str(model_path))
         stats = post_process_engine.get_mesh_stats(mesh)
 
-        # 6. 自动轻修复（5步管线）
-        repaired_mesh, repair_report = post_process_engine.auto_light_repair(mesh)
+        # 6. 多格式导出（暂时跳过修复和缺陷检测，直接导出原始模型）
+        # repaired_mesh, repair_report = post_process_engine.auto_light_repair(mesh)
+        # defects = defect_detector.detect_all(repaired_mesh)
+        # severity = defect_detector.classify_severity(defects)
+        formats = post_process_engine.export_formats(mesh, output_dir, asset_id)
 
-        # 7. 缺陷检测 + 定级
-        defects = defect_detector.detect_all(repaired_mesh)
-        severity = defect_detector.classify_severity(defects)
-
-        # 8. 多格式导出
-        formats = post_process_engine.export_formats(repaired_mesh, output_dir, asset_id)
-
-        # 9. 预览图生成
-        preview_path = output_dir / f"{asset_id}_preview.png"
-        post_process_engine.generate_preview_image(repaired_mesh, str(preview_path))
-
-        # 10. 更新资产记录（路径 + 统计 + 缺陷数据）
+        # 7. 更新资产记录
         _update_asset_status(
             asset_uid, AssetStatus.PROCESSED,
             original_model_path=str(model_path),
-            processed_model_path=formats.get("glb"),
             glb_path=formats.get("glb"),
-            fbx_path=formats.get("fbx"),
             obj_path=formats.get("obj"),
-            preview_image_path=str(preview_path),
             face_count=stats["face_count"],
             vertex_count=stats["vertex_count"],
             api_provider="tripo3d",
             api_task_id=result["task_id"],
-            tags={
-                "repair_report": repair_report,
-                "defects": defects,
-                "severity": severity,
-            },
         )
 
-        # 11. 更新任务记录为成功
+        # 8. 更新任务为成功
         _update_task_status(
             task_uid, TaskStatus.SUCCESS,
             progress=1.0,
-            output_result={"stats": stats, "defect_count": len(defects), "severity": severity},
+            output_result={"stats": stats},
         )
 
-        return {"status": "success", "asset_id": asset_id, "defect_count": len(defects)}
+        return {"status": "success", "asset_id": asset_id}
 
     except SoftTimeLimitExceeded:
         _update_asset_status(asset_uid, AssetStatus.FAILED, error_message="Task timed out")

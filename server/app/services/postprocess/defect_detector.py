@@ -40,9 +40,17 @@ class DefectDetector:
         analysis_mesh = mesh
 
         if len(mesh.faces) > 100_000:
-            target = min(50_000, len(mesh.faces) // 4)
-            analysis_mesh = mesh.simplify_quadratic_decimation(target)
-            logger.info(f"Decimated mesh for defect analysis: {len(mesh.faces)} → {len(analysis_mesh.faces)} faces")
+            try:
+                target = min(50_000, len(mesh.faces) // 4)
+                if hasattr(mesh, 'simplify_quadratic_decimation'):
+                    analysis_mesh = mesh.simplify_quadratic_decimation(target)
+                else:
+                    # trimesh 4.5+ 移除了该方法，用 simplify_quadric_decimation
+                    analysis_mesh = mesh.simplify_quadric_decimation(target)
+                logger.info(f"Decimated mesh for defect analysis: {len(mesh.faces)} → {len(analysis_mesh.faces)} faces")
+            except Exception as e:
+                logger.warning(f"Decimation failed ({e}), analyzing on original mesh")
+                analysis_mesh = mesh
 
         defects.extend(self.detect_non_manifold(analysis_mesh))
         defects.extend(self.detect_degenerate_faces(analysis_mesh))
